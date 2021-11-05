@@ -1,0 +1,134 @@
+#!/usr/bin/python -u
+#
+# CS3700, Spring 2015
+# Project 2 Starter Code
+#
+
+import sys
+import socket
+import datetime
+import select
+import json
+from threading import Lock, Timer
+
+MSG_SIZE = 1500
+DATA_SIZE = 500
+TIMEOUT = 30
+SEQUENCE = 0
+PACKET = {}
+eof = 0
+op = 0
+key = Lock()
+
+# get the host and its port
+IP_PORT = sys.argv[1]
+UDP_IP = IP_PORT[0:IP_PORT.find(":")]
+UDP_PORT = int(IP_PORT[IP_PORT.find(":") + 1:])
+dest = (UDP_IP, UDP_PORT)
+
+# sock to destination
+sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+sock.settimeout(TIMEOUT)
+
+# log
+def log(string):
+    sys.stderr.write(datetime.datetime.now().strftime("%H:%M:%S.%f") + " " + string + "\n")
+
+# send the next packet followed the destination
+def send_next_packet():
+    global SEQUENCE
+
+    data = sys.stdin.read(DATA_SIZE)
+    if (len(data) > 0):
+        msg = json.dumps({"sequence": SEQUENCE, "data": data, "ack": False, "eof": False})
+
+        if sock.sendto(msg, dest) < len(msg):
+            log("[error] unable to fully send packet")
+        else:
+            log("[send data] " + str(SEQUENCE) + " (" + str(len(data)) + ")")
+            time = Timer(op, send_packet, [msg, SEQUENCE])
+            time.start()
+            PACKET[SEQUENCE] = (msg, time)
+
+        SEQUENCE += len(data)
+
+        return True
+    else:
+        return False
+
+# send packet and find time usage
+def send_packet(msg, seq):
+    timer = PACKET[SEQUENCE][1]
+    timer.cancel()
+    PACKET.pop(SEQUENCE)
+    sys.exit(0)
+
+
+# Send first packet
+send_next_packet()
+count = 30
+count -= 1
+
+while True:
+    if count > 0:
+        for i in range(count):
+            send_next_packet()
+        count = 0
+
+    log("ABOUT TO SLEEP")
+    recv = sock.recvfrom(MSG_SIZE)
+
+    if recv:
+        (data, addr) = recv
+        try:
+            decoded = json.loads(data)
+
+            # when encounter an ack
+            if decoded['ack'] == SEQUENCE:
+                log("[recv ack] " + str(SEQUENCE))
+
+                key.acquire()
+                for k in PACKET.keys():
+                    if k < decoded['ack']:
+                        PACKET[k][1].cancel()
+                        del PACKET[k]
+                        count += 1
+                key.release()
+
+               # break if there's no more packet to send
+                if (not send_next_packet()):
+                    break
+        except (ValueError, KeyError, TypeError):
+            log("[recv corrupt packet]")
+    else:
+        log("[error] timeout")
+        sys.exit(-1)
+
+msg = json.dumps({"eof": True, "data": "", "sequence": SEQUENCE, "ack": False})
+sock.sendto(msg, dest)
+time = Timer(op, send_packet, [msg, SEQUENCE])
+time.start()
+PACKET[SEQUENCE] = (msg, time)
+
+while eof < 10:
+    try:
+        ack = select.select([sock], [], [], 1)
+        if ack[0]:
+            recv = sock.recvfrom(MSG_SIZE)
+            if recv:
+                (data, addr) = recv
+                decoded = json.loads(data)
+                if 'eof' in decoded and decoded['eof']:
+                    log("[recv eof ack]")
+                    key.acquire()
+                    timer = PACKET[SEQUENCE][1]
+                    timer.cancel()
+                    PACKET.pop(SEQUENCE)
+                    key.release()
+                    break
+                else:
+                    continue
+    except:
+        break
+
+sys.exit(0)
