@@ -3,19 +3,19 @@
 # CS3700, Spring 2015
 # Project 2 Starter Code
 #
-
 import sys
 import socket
+import time
 import datetime
 import json
 
-
 def log(string):
-    sys.stderr.write(datetime.datetime.now().strftime("%H:%M:%S.%f") + " " + string + "\n")
+  sys.stderr.write(datetime.datetime.now().strftime("%H:%M:%S.%f") + " " + string + "\n")
 
 MSG_SIZE = 1500
-TIMEOUT = 10
+TIMEOUT = 60
 PACKET = {}
+SEQUENCE = 0
 
 # Bind to localhost and an ephemeral port
 UDP_IP = "127.0.0.1"
@@ -33,48 +33,45 @@ log("[bound] " + str(UDP_PORT))
 # Now listen for packets
 while True:
     result = sock.recvfrom(MSG_SIZE)
-
     # If nothing is ready, we hit the timeout
     if result:
-        (data, addr) = result
+      (data, addr) = result
+      try:
+        decoded = json.loads(data)
 
-        try:
-            decoded = json.loads(data)
+        # If the EOF flag is set, exit
+        if (decoded['eof']):
+            for key in sorted(PACKET.keys()):
+                sys.stdout.write(PACKET[key]['data'])
+            log("[completed]")
+            sys.exit(0)
 
-            # If the EOF flag is set, exit
-            if (decoded['eof']):
-                log("[completed]")
-                msg = json.dumps({"eof": True})
-                log("ABOUT TO SEND " + msg)
-                if sock.sendto(msg, addr) < len(msg):
-                    log("[error] error sending all the packets")
-                sock.close()
-                sys.exit(0)
+        # If there is data, we accept it and print it out
+        if decoded['data']:
+          seq = decoded['sequence']
+          log("[recv data] " + str(seq) + " (" + str(len(decoded['data'])) + ") ACCEPTED (in-order)")
 
-            # If there is data, we accept it and print it out
-            if (decoded['data']):
-                seq = decoded['sequence']
-                if seq not in PACKET:
-                    PACKET[seq] = decoded['data']
-                    log("[recv data] " + str(decoded['sequence']) + " (" + str(
-                        len(decoded['data'])) + ") ACCEPTED (in-order)")
-                    sys.stdout.write(decoded['data'])
+          if seq not in PACKET:
+            PACKET[seq] = decoded
 
-                # Send back an ack to the sender
-                msg = json.dumps({"ack": decoded['sequence'] + len(decoded['data'])})
+          if seq == SEQUENCE:
+              SEQUENCE += len(decoded['data'])
+              PACKET[seq] = decoded
 
-            log("ABOUT TO SEND " + msg)
+          # Send back an ack to the sender
+          msg = json.dumps({"ack": seq + len(decoded['data']), 'timestamp': time.time(), 'eof': False})
 
-            if sock.sendto(msg, addr) < len(msg):
-                log("[error] unable to fully send packet")
+        log("about to send " + msg)
 
-        except (ValueError, KeyError, TypeError) as e:
-            log("[recv corrupt packet]")
-            raise e
+        if sock.sendto(msg, addr) < len(msg):
+          log("[error] unable to fully send packet")
 
+      except (ValueError, KeyError, TypeError) as e:
+        log("[recv corrupt packet]")
+        raise e
     else:
-        log("[error] timeout")
-        sys.exit(-1)
+      log("[error] timeout")
+      sys.exit(-1)
 
 
 
